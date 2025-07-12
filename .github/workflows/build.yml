@@ -24,7 +24,7 @@ jobs:
 
     - name: Install dependencies
       run: |
-        pip install boto3 requests
+        pip install boto3 requests packaging
 
     - name: Update the database
       run: |

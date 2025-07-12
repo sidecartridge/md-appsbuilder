@@ -6,6 +6,8 @@ import datetime
 import requests
 import re
 
+from packaging.version import parse as parse_version
+
 # Discord webhook URL from environment
 DISCORD_WEBHOOK = os.getenv('DISCORD_WEBHOOK')
 
@@ -60,25 +62,7 @@ def aggregate_json_files_from_s3(bucket_name: str, exclude_prefix: str = "apps")
 
 
 def compare_versions(v1: str, v2: str) -> bool:
-    """
-    Compare two semantic version strings. Returns True if v2 > v1.
-    """
-    def normalize(ver):
-        parts = ver.strip().split('.')
-        return [int(p) if p.isdigit() else 0 for p in parts]
-
-    p1 = normalize(v1)
-    p2 = normalize(v2)
-    length = max(len(p1), len(p2))
-    p1.extend([0] * (length - len(p1)))
-    p2.extend([0] * (length - len(p2)))
-
-    for a, b in zip(p1, p2):
-        if b > a:
-            return True
-        if b < a:
-            return False
-    return False
+    return parse_version(v2) > parse_version(v1)
 
 
 def find_new_apps_by_uuid(old_apps: list, new_apps: list) -> list:
@@ -99,6 +83,7 @@ def find_updated_apps_by_version(old_apps: list, new_apps: list) -> list:
         uuid = app.get("uuid")
         new_version = app.get("version")
         old_version = old_versions.get(uuid)
+        print(f"Checking app {app.get('name')} (UUID: {uuid}) - Old version: {old_version}, New version: {new_version}")
         if uuid and new_version and old_version and compare_versions(old_version, new_version):
             updates.append(app)
     return updates

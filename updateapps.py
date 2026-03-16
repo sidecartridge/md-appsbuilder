@@ -1,15 +1,10 @@
-import os
 import json
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 import datetime
-import requests
 import re
 
 from packaging.version import parse as parse_version
-
-# Discord webhook URL from environment
-DISCORD_WEBHOOK = os.getenv('DISCORD_WEBHOOK')
 
 
 def fetch_remote_apps_json(s3_client, bucket: str, key: str) -> dict:
@@ -107,34 +102,6 @@ def parse_links(text: str) -> str:
     return pattern.sub(repl, text)
 
 
-def send_discord_notification(new_apps: list, updated_apps: list) -> None:
-    """
-    Send a summary message to Discord via webhook for new or updated apps,
-    converting HTML links in descriptions to Markdown.
-    """
-    if not DISCORD_WEBHOOK:
-        return
-
-    content_lines = []
-    if new_apps:
-        content_lines.append("📢 **Hey @everyone! There are new microfirmwares available!**")
-        for app in new_apps:
-            desc = parse_links(app.get('description', ''))
-            content_lines.append(f"- {app.get('name')} : {desc}")
-    if updated_apps:
-        content_lines.append("📢 **Hey @everyone! Some microfirmwares have been updated!**")
-        for app in updated_apps:
-            desc = parse_links(app.get('description', ''))
-            content_lines.append(f"- {app.get('name')} new version {app.get('version')} : {desc}")
-
-    payload = {"content": "\n".join(content_lines)}
-    try:
-        response = requests.post(DISCORD_WEBHOOK, json=payload)
-        response.raise_for_status()
-    except Exception as e:
-        print(f"Failed to send Discord notification: {e}")
-
-
 def backup_and_upload(s3_client, bucket: str, local_file: str, remote_key: str) -> None:
     """
     Backup existing remote_key to remote_key.DDMMYYYY.bak then upload local_file as remote_key.
@@ -197,9 +164,8 @@ def main():
     else:
         print("No updated JSON entries found by version.")
 
-    # Notify, backup & upload if needed
+    # Backup & upload if needed
     if new_apps or updated_apps:
-        send_discord_notification(new_apps, updated_apps)
         backup_and_upload(s3, BUCKET, LOCAL_FILE, REMOTE_KEY)
     else:
         print("No changes to push to S3.")

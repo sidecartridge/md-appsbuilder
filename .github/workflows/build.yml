@@ -24,7 +24,7 @@ jobs:
 
     - name: Install dependencies
       run: |
-        pip install boto3 requests packaging
+        pip install boto3 packaging
 
     - name: Update the database
       run: |
@@ -32,4 +32,3 @@ jobs:
       env:
         AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}

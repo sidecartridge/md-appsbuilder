@@ -162,3 +162,4 @@ cython_debug/
 secrets.sh
 !images.log
 apps.json
+.claude

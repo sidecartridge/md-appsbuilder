@@ -26,7 +26,7 @@ jobs:
       run: |
         pip install boto3 packaging
 
-    - name: Update the database
+    - name: Update the database (dry run on PRs)
       run: |
         python updateapps.py
       env:

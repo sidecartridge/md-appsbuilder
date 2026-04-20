@@ -1,6 +1,11 @@
 # Multidevice Apps Builder
 
-Rebuilds the `apps.json` catalog for the SideCartridge Multidevice project. The script aggregates per-app `*.json` files in the `atarist.sidecartridge.com` S3 bucket, derives each app's `previous_versions` from the `{uuid}-*.uf2` binaries it finds in the same bucket (md5 computed from the actual bytes), then optionally publishes the result back to S3.
+Rebuilds the SideCartridge Multidevice app catalogs. The script aggregates per-app `*.json` files in the `atarist.sidecartridge.com` S3 bucket, derives each app's `previous_versions` from the `{uuid}-*.uf2` binaries it finds in the same bucket (md5 computed from the actual bytes), then writes **two** catalogs:
+
+- `apps.json` — every app from the bucket.
+- `apps-beta.json` — only apps whose current top-level `version` contains `alpha` or `beta` (case-insensitive substring). Useful for a "prerelease" channel in clients. `previous_versions` inside each included app is **not** filtered — the full history is preserved.
+
+Each catalog is published to its own S3 key independently, and both honour the same dry-run / test / publish semantics.
 
 ## Requirements
 
@@ -16,23 +21,23 @@ python updateapps.py [--test] [--publish]
 
 Defaults are safe: nothing is uploaded unless you pass `--publish`.
 
-| Command | Local file | S3 upload |
+| Command | Local files | S3 uploads |
 |---|---|---|
-| `python updateapps.py` | rewrites `apps.json` | none (dry run) |
-| `python updateapps.py --publish` | rewrites `apps.json` | uploads to `apps.json` **only if** a UUID is new or a top-level `version` bumped (existing object backed up to `apps.json.DDMMYYYY.bak` first) |
-| `python updateapps.py --test` | rewrites `apps-test.json` | none (dry run) |
-| `python updateapps.py --test --publish` | rewrites `apps-test.json` | always uploads to `apps-test.json` (no diff gate) — production `apps.json` untouched |
+| `python updateapps.py` | rewrites `apps.json` and `apps-beta.json` | none (dry run) |
+| `python updateapps.py --publish` | rewrites `apps.json` and `apps-beta.json` | uploads each catalog **only if** its own diff shows a new UUID or a top-level `version` bump (existing objects backed up to `{key}.DDMMYYYY.bak` first) |
+| `python updateapps.py --test` | rewrites `apps-test.json` and `apps-beta-test.json` | none (dry run) |
+| `python updateapps.py --test --publish` | rewrites `apps-test.json` and `apps-beta-test.json` | always uploads both (no diff gate) — production `apps.json` / `apps-beta.json` untouched |
 
-Use `--test` while iterating on the catalog or the script itself: it routes both the local output and the S3 object to `apps-test.json`, so you can inspect the result at `https://atarist.sidecartridge.com/apps-test.json` without affecting the live catalog.
+Use `--test` while iterating: it routes both local files and both S3 objects to the `*-test.json` variants, so you can inspect the results at `https://atarist.sidecartridge.com/apps-test.json` and `https://atarist.sidecartridge.com/apps-beta-test.json` without affecting the live catalogs.
 
 ## CI
 
 - `.github/workflows/build.yml` — runs on every PR in **dry-run** mode (no upload). Useful for catching script errors before merge.
-- `.github/workflows/nightly.yml` — runs daily at 06:00 UTC with `--publish`. This is the only path that writes to production `apps.json`.
+- `.github/workflows/nightly.yml` — runs daily at 06:00 UTC with `--publish`. This is the only path that writes to production `apps.json` / `apps-beta.json`.
 
 ## Output schema
 
-Each app object in `apps.json`:
+Each app object in `apps.json` (and `apps-beta.json`):
 
 ```json
 {

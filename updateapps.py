@@ -160,6 +160,62 @@ def build_previous_versions(s3_client, bucket: str, app: dict) -> list:
     return found
 
 
+def is_prerelease_version(version: str) -> bool:
+    """True if `version` contains 'alpha' or 'beta' as a case-insensitive substring."""
+    v = (version or "").lower()
+    return "alpha" in v or "beta" in v
+
+
+def process_catalog(
+    s3_client,
+    bucket: str,
+    apps: list,
+    key: str,
+    publish: bool,
+    force_upload: bool,
+) -> None:
+    """
+    Write `apps` wrapped as {"apps": [...]} to a local file named `key`, diff
+    against s3://bucket/`key`, print new/updated entries, and upload with
+    backup if the diff is non-empty (or force_upload is set). Upload requires
+    publish=True.
+    """
+    data = {"apps": apps}
+    with open(key, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    print(f"[{key}] Updated local file ({len(apps)} apps)")
+
+    old_apps = fetch_remote_apps_json(s3_client, bucket, key).get("apps", [])
+    new_apps = find_new_apps_by_uuid(old_apps, apps)
+    updated_apps = find_updated_apps_by_version(old_apps, apps)
+
+    if new_apps:
+        print(f"[{key}] New entries (by UUID):")
+        for app in new_apps:
+            desc = parse_links(app.get("description", ""))
+            print(f"  - uuid='{app.get('uuid')}', name='{app.get('name')}', description='{desc}'")
+    else:
+        print(f"[{key}] No new entries by UUID.")
+
+    if updated_apps:
+        print(f"[{key}] Updated entries (version bump):")
+        for app in updated_apps:
+            desc = parse_links(app.get("description", ""))
+            print(f"  - uuid='{app.get('uuid')}', name='{app.get('name')}', version='{app.get('version')}', description='{desc}'")
+    else:
+        print(f"[{key}] No updated entries by version.")
+
+    should_upload = bool(new_apps or updated_apps) or force_upload
+    if should_upload:
+        if publish:
+            backup_and_upload(s3_client, bucket, key, key)
+        else:
+            reason = "test mode" if force_upload else "changes detected"
+            print(f"[{key}] DRY RUN: {reason} but skipping upload. Re-run with --publish.")
+    else:
+        print(f"[{key}] No changes to push.")
+
+
 def backup_and_upload(s3_client, bucket: str, local_file: str, remote_key: str) -> None:
     """
     Backup existing remote_key to remote_key.DDMMYYYY.bak then upload local_file as remote_key.
@@ -170,7 +226,7 @@ def backup_and_upload(s3_client, bucket: str, local_file: str, remote_key: str) 
         s3_client.copy_object(Bucket=bucket, CopySource={'Bucket': bucket, 'Key': remote_key}, Key=backup_key)
         print(f"Created backup: {backup_key}")
     except s3_client.exceptions.NoSuchKey:
-        print("No existing remote apps.json to backup.")
+        print(f"No existing remote {remote_key} to backup.")
     except (BotoCoreError, ClientError) as e:
         print(f"Error creating backup: {e}")
 
@@ -179,36 +235,31 @@ def backup_and_upload(s3_client, bucket: str, local_file: str, remote_key: str) 
             s3_client.put_object(Bucket=bucket, Key=remote_key, Body=f)
         print(f"Uploaded new {remote_key}")
     except (BotoCoreError, ClientError, IOError) as e:
-        print(f"Error uploading new apps.json: {e}")
+        print(f"Error uploading new {remote_key}: {e}")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Rebuild apps.json from per-app JSON files in S3.")
+    parser = argparse.ArgumentParser(description="Rebuild apps.json (and apps-beta.json) from per-app JSON files in S3.")
     parser.add_argument(
         "--publish",
         action="store_true",
-        help="Upload the rebuilt JSON to S3 (default: dry run, write local file only).",
+        help="Upload the rebuilt JSON files to S3 (default: dry run, write local files only).",
     )
     parser.add_argument(
         "--test",
         action="store_true",
-        help="Target apps-test.json instead of apps.json (locally and remote) and bypass the no-change gate.",
+        help="Target apps-test.json / apps-beta-test.json instead of production keys, and bypass the no-change gate.",
     )
     args = parser.parse_args()
 
-    BUCKET = 'atarist.sidecartridge.com'
-    LOCAL_FILE = 'apps-test.json' if args.test else 'apps.json'
-    REMOTE_KEY = 'apps-test.json' if args.test else 'apps.json'
+    BUCKET = "atarist.sidecartridge.com"
+    main_key = "apps-test.json" if args.test else "apps.json"
+    beta_key = "apps-beta-test.json" if args.test else "apps-beta.json"
 
-    s3 = boto3.client('s3', region_name='us-east-1')
-
-    # Fetch remote baseline
-    remote_data = fetch_remote_apps_json(s3, BUCKET, REMOTE_KEY)
-    old_apps = remote_data.get('apps', [])
+    s3 = boto3.client("s3", region_name="us-east-1")
 
     # Aggregate current bucket
-    current_data = aggregate_json_files_from_s3(BUCKET)
-    current_apps = current_data['apps']
+    current_apps = aggregate_json_files_from_s3(BUCKET)["apps"]
 
     # Enrich each app with historical binaries discovered in the bucket
     for app in current_apps:
@@ -219,41 +270,12 @@ def main():
         app["previous_versions"] = previous
         print(f"App '{app.get('name')}' (UUID: {uuid}) — {len(previous)} previous version(s)")
 
-    # Write local apps.json
-    with open(LOCAL_FILE, 'w', encoding='utf-8') as f:
-        json.dump(current_data, f, ensure_ascii=False, indent=2)
-    print(f"Updated local {LOCAL_FILE}")
+    # Main catalog: all apps
+    process_catalog(s3, BUCKET, current_apps, main_key, args.publish, args.test)
 
-    # Check for new and updated entries
-    new_apps = find_new_apps_by_uuid(old_apps, current_apps)
-    updated_apps = find_updated_apps_by_version(old_apps, current_apps)
-
-    if new_apps:
-        print("New JSON entries detected (by UUID):")
-        for app in new_apps:
-            desc = parse_links(app.get('description', ''))
-            print(f"- uuid='{app.get('uuid')}', name='{app.get('name')}', description='{desc}'")
-    else:
-        print("No new JSON entries found by UUID.")
-
-    if updated_apps:
-        print("Updated JSON entries detected (version bump):")
-        for app in updated_apps:
-            desc = parse_links(app.get('description', ''))
-            print(f"- uuid='{app.get('uuid')}', name='{app.get('name')}', version='{app.get('version')}', description='{desc}'")
-    else:
-        print("No updated JSON entries found by version.")
-
-    # Backup & upload if needed (test mode bypasses the no-change gate)
-    should_upload = bool(new_apps or updated_apps) or args.test
-    if should_upload:
-        if args.publish:
-            backup_and_upload(s3, BUCKET, LOCAL_FILE, REMOTE_KEY)
-        else:
-            reason = "test mode" if args.test else "changes detected"
-            print(f"DRY RUN: {reason} but skipping upload. Re-run with --publish to upload to s3://{BUCKET}/{REMOTE_KEY}.")
-    else:
-        print(f"No changes to push to s3://{BUCKET}/{REMOTE_KEY}.")
+    # Beta catalog: only apps whose current top-level version contains alpha/beta
+    beta_apps = [app for app in current_apps if is_prerelease_version(app.get("version", ""))]
+    process_catalog(s3, BUCKET, beta_apps, beta_key, args.publish, args.test)
 
 if __name__ == '__main__':
     main()

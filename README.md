@@ -1,6 +1,6 @@
 # Multidevice Apps Builder
 
-Rebuilds the SideCartridge Multidevice app catalogs. The script aggregates per-app `*.json` files in the `atarist.sidecartridge.com` S3 bucket, derives each app's `previous_versions` from the `{uuid}-*.uf2` binaries it finds in the same bucket (md5 computed from the actual bytes), then writes **two** catalogs:
+Rebuilds the SideCartridge Multidevice app catalogs. The script aggregates per-app `*.json` files in the `atarist.sidecartridge.com` S3 bucket, normalizes each app's `tags`/`devices` to canonical taxonomy values (see [Taxonomy normalization](#taxonomy-normalization)), derives each app's `previous_versions` from the `{uuid}-*.uf2` binaries it finds in the same bucket (md5 computed from the actual bytes), then writes **two** catalogs:
 
 - `apps.json` — every app from the bucket.
 - `apps-beta.json` — only apps whose current top-level `version` contains `alpha` or `beta` (case-insensitive substring). Useful for a "prerelease" channel in clients. `previous_versions` inside each included app is **not** filtered — the full history is preserved.
@@ -34,6 +34,27 @@ Use `--test` while iterating: it routes both local files and both S3 objects to 
 
 - `.github/workflows/build.yml` — runs on every PR in **dry-run** mode (no upload). Useful for catching script errors before merge.
 - `.github/workflows/nightly.yml` — runs daily at 06:00 UTC with `--publish`. This is the only path that writes to production `apps.json` / `apps-beta.json`.
+
+## Taxonomy normalization
+
+Per-app JSON files often use slightly different spellings for the same `tags` / `devices`
+value (`Atari ST`, `AtariST`, `ST`, …). To keep the catalog consistent, every app's
+`tags` and `devices` are rewritten to a canonical value on each build, using the alias
+dictionary in [`taxonomies.json`](taxonomies.json):
+
+```json
+{
+  "tags":    { "Catalogs": ["catalog", "catalogue", "catalogues"] },
+  "devices": { "ST": ["Atari ST", "AtariST", "Atari-ST"] }
+}
+```
+
+- `tags` and `devices` have **separate** maps, so a device alias never rewrites a tag.
+- Each entry is `canonical -> [aliases]`. Matching is **case-insensitive**, so a canonical
+  key already matches its own casing — only list genuinely different spellings/words.
+- Unknown values are left unchanged; results are de-duplicated, preserving order.
+- Edit `taxonomies.json` to add new canonical terms or aliases — no code change needed.
+  A missing or invalid file simply disables normalization for that run.
 
 ## Output schema
 

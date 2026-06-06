@@ -166,6 +166,52 @@ def is_prerelease_version(version: str) -> bool:
     return "alpha" in v or "beta" in v
 
 
+def load_taxonomy_aliases(path: str = "taxonomies.json") -> dict:
+    """
+    Load canonical->aliases maps for `tags` and `devices` and invert them into
+    case-insensitive alias->canonical lookups (the canonical term maps to itself).
+    Missing/invalid file disables normalization rather than aborting the build.
+    """
+    try:
+        with open(path, encoding="utf-8") as f:
+            raw = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError) as e:
+        print(f"Warning: could not load {path}: {e}; skipping taxonomy normalization")
+        raw = {}
+
+    lookups = {}
+    for field in ("tags", "devices"):
+        lookup = {}
+        for canonical, aliases in raw.get(field, {}).items():
+            lookup[canonical.lower()] = canonical
+            for alias in aliases:
+                lookup[alias.lower()] = canonical
+        lookups[field] = lookup
+    return lookups
+
+
+def normalize_terms(values: list, alias_map: dict) -> list:
+    """
+    Map each term to its canonical form via `alias_map` (case-insensitive),
+    leaving unknown terms unchanged. Deduplicates while preserving first-seen order.
+    """
+    result, seen = [], set()
+    for v in values:
+        canonical = alias_map.get(v.strip().lower(), v) if isinstance(v, str) else v
+        if canonical not in seen:
+            seen.add(canonical)
+            result.append(canonical)
+    return result
+
+
+def normalize_taxonomies(app: dict, lookups: dict) -> None:
+    """Rewrite `app`'s tags/devices in place to their canonical taxonomy values."""
+    for field in ("tags", "devices"):
+        values = app.get(field)
+        if isinstance(values, list):
+            app[field] = normalize_terms(values, lookups[field])
+
+
 def process_catalog(
     s3_client,
     bucket: str,
@@ -261,8 +307,12 @@ def main():
     # Aggregate current bucket
     current_apps = aggregate_json_files_from_s3(BUCKET)["apps"]
 
+    # Canonical taxonomy lookups for tags/devices
+    taxonomy_aliases = load_taxonomy_aliases()
+
     # Enrich each app with historical binaries discovered in the bucket
     for app in current_apps:
+        normalize_taxonomies(app, taxonomy_aliases)
         uuid = app.get("uuid")
         if not uuid:
             continue

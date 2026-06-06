@@ -1,0 +1,23 @@
+{
+  "tags": {
+    "ROM": ["roms"],
+    "HD": ["hard disk", "hard-disk", "harddisk"],
+    "Floppy": ["floppies"],
+    "Emulation": ["emulator"],
+    "Development": ["dev", "developer", "cli"],
+    "Troubleshooting": ["debug"],
+    "Scripting": ["worker", "javascript"],
+    "File Browser": ["filebrowser"],
+    "Catalogs": ["catalog", "catalogue", "catalogues"],
+    "GEMDRIVE": ["gem drive"],
+    "Demo": []
+  },
+  "devices": {
+    "ST": ["Atari ST", "AtariST", "Atari-ST"],
+    "STE": ["Atari STE", "AtariSTE", "Atari STe", "STe"],
+    "MegaST": ["Mega ST", "Atari Mega ST", "Mega-ST"],
+    "MegaSTE": ["Mega STE", "Atari Mega STE", "Mega STe", "Mega-STE"],
+    "TT": ["Atari TT", "TT030"],
+    "Falcon": ["Atari Falcon", "Falcon030", "Falcon 030"]
+  }
+}

@@ -30,6 +30,7 @@ def aggregate_json_files_from_s3(bucket_name: str, exclude_prefix: str = "apps")
     """
     s3 = boto3.client('s3', region_name='us-east-1')
     aggregated = {"apps": []}
+    failed = []
     continuation_token = None
 
     while True:
@@ -49,17 +50,26 @@ def aggregate_json_files_from_s3(bucket_name: str, exclude_prefix: str = "apps")
                     aggregated["apps"].append(data)
                 except Exception as e:
                     print(f"Error processing {key}: {e}")
+                    failed.append(key)
 
         if response.get("IsTruncated"):
             continuation_token = response.get("NextContinuationToken")
         else:
             break
 
+    # Abort rather than build a catalog missing these apps (removals trigger a publish)
+    if failed:
+        raise SystemExit(f"Aborting: could not load {len(failed)} app JSON file(s): {', '.join(failed)}")
+
     return aggregated
 
 
 def compare_versions(v1: str, v2: str) -> bool:
-    return parse_version(v2) > parse_version(v1)
+    try:
+        return parse_version(v2) > parse_version(v1)
+    except InvalidVersion:
+        print(f"Warning: non-PEP 440 version ({v1!r} -> {v2!r}); treating any change as an update")
+        return v1 != v2
 
 
 def find_new_apps_by_uuid(old_apps: list, new_apps: list) -> list:
@@ -84,6 +94,14 @@ def find_updated_apps_by_version(old_apps: list, new_apps: list) -> list:
         if uuid and new_version and old_version and compare_versions(old_version, new_version):
             updates.append(app)
     return updates
+
+
+def find_removed_apps_by_uuid(old_apps: list, new_apps: list) -> list:
+    """
+    Return list of old app objects whose 'uuid' is no longer present in new_apps.
+    """
+    new_uuids = {app.get("uuid") for app in new_apps if app.get("uuid")}
+    return [app for app in old_apps if app.get("uuid") and app.get("uuid") not in new_uuids]
 
 
 def parse_links(text: str) -> str:
@@ -234,6 +252,7 @@ def process_catalog(
     old_apps = fetch_remote_apps_json(s3_client, bucket, key).get("apps", [])
     new_apps = find_new_apps_by_uuid(old_apps, apps)
     updated_apps = find_updated_apps_by_version(old_apps, apps)
+    removed_apps = find_removed_apps_by_uuid(old_apps, apps)
 
     if new_apps:
         print(f"[{key}] New entries (by UUID):")
@@ -251,12 +270,19 @@ def process_catalog(
     else:
         print(f"[{key}] No updated entries by version.")
 
-    should_upload = bool(new_apps or updated_apps) or force_upload
+    if removed_apps:
+        print(f"[{key}] Removed entries (by UUID):")
+        for app in removed_apps:
+            print(f"  - uuid='{app.get('uuid')}', name='{app.get('name')}', version='{app.get('version')}'")
+    else:
+        print(f"[{key}] No removed entries by UUID.")
+
+    should_upload = bool(new_apps or updated_apps or removed_apps) or force_upload
     if should_upload:
         if publish:
             backup_and_upload(s3_client, bucket, key, key)
         else:
-            reason = "test mode" if force_upload else "changes detected"
+            reason = "upload forced" if force_upload else "changes detected"
             print(f"[{key}] DRY RUN: {reason} but skipping upload. Re-run with --publish.")
     else:
         print(f"[{key}] No changes to push.")
@@ -281,7 +307,7 @@ def backup_and_upload(s3_client, bucket: str, local_file: str, remote_key: str) 
             s3_client.put_object(Bucket=bucket, Key=remote_key, Body=f)
         print(f"Uploaded new {remote_key}")
     except (BotoCoreError, ClientError, IOError) as e:
-        print(f"Error uploading new {remote_key}: {e}")
+        raise SystemExit(f"Error uploading new {remote_key}: {e}")
 
 
 def main():
@@ -295,6 +321,11 @@ def main():
         "--test",
         action="store_true",
         help="Target apps-test.json / apps-beta-test.json instead of production keys, and bypass the no-change gate.",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Bypass the no-change gate and upload every catalog even without changes (still requires --publish).",
     )
     args = parser.parse_args()
 
@@ -321,11 +352,13 @@ def main():
         print(f"App '{app.get('name')}' (UUID: {uuid}) — {len(previous)} previous version(s)")
 
     # Main catalog: all apps
-    process_catalog(s3, BUCKET, current_apps, main_key, args.publish, args.test)
+    force_upload = args.test or args.force
+
+    process_catalog(s3, BUCKET, current_apps, main_key, args.publish, force_upload)
 
     # Beta catalog: only apps whose current top-level version contains alpha/beta
     beta_apps = [app for app in current_apps if is_prerelease_version(app.get("version", ""))]
-    process_catalog(s3, BUCKET, beta_apps, beta_key, args.publish, args.test)
+    process_catalog(s3, BUCKET, beta_apps, beta_key, args.publish, force_upload)
 
 if __name__ == '__main__':
     main()

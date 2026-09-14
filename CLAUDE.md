@@ -15,9 +15,10 @@ A one-shot Python script (`updateapps.py`) that rebuilds **two** catalogs for th
 # Local runs (requires AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY in env)
 # `source secrets.sh` exports them locally — gitignored, never commit it.
 python updateapps.py                  # dry run: rewrites local apps.json + apps-beta.json only
-python updateapps.py --publish        # publishes each catalog IF its own diff shows a new UUID or top-level version bump
+python updateapps.py --publish        # publishes each catalog IF its own diff shows a new/removed UUID or top-level version bump
 python updateapps.py --test           # dry run targeting apps-test.json + apps-beta-test.json (local only)
 python updateapps.py --test --publish # always uploads both *-test.json variants (no diff gate); production keys untouched
+python updateapps.py --publish --force # always uploads both production catalogs (no diff gate)
 
 # Dependencies (no requirements.txt — keep workflows in sync if imports change)
 pip install boto3 packaging
@@ -29,26 +30,45 @@ Triggers:
 - `build.yml` — pull_request + manual dispatch, **dry-run** (no `--publish`). PR-time sanity check.
 - `nightly.yml` — daily 06:00 UTC, runs with `--publish`. Only path that writes production `apps.json` / `apps-beta.json`.
 
-There are no tests or linters configured.
+There are no tests or linters configured. Run from the repo root — `taxonomies.json` and every output file use paths relative to the working directory.
 
 ## Architecture
 
 The flow in `main()` is the whole program — a shared enrich step feeding a per-catalog publish step, all against a single bucket (`atarist.sidecartridge.com`, region `us-east-1`):
 
-1. **Aggregate** — `aggregate_json_files_from_s3` lists every `*.json` in the bucket whose key does **not** start with `apps` (excludes `apps.json`, `apps-beta.json`, their `-test` variants, and dated `.bak` files) and merges them into `{"apps": [...]}`. Paginated via `ContinuationToken`.
+1. **Aggregate** — `aggregate_json_files_from_s3` lists every `*.json` in the bucket whose key does **not** start with `apps` (excludes `apps.json`, `apps-beta.json`, their `-test` variants, and dated `.bak` files) and merges them into `{"apps": [...]}`. Paginated via `ContinuationToken`. If any of those files can't be read or parsed, it lists them all and exits non-zero before anything is written or published.
 2. **Enrich** — two per-app steps:
    - `normalize_taxonomies` rewrites `app["tags"]` and `app["devices"]` to canonical values using the alias maps in `taxonomies.json` (loaded once via `load_taxonomy_aliases`). Matching is case-insensitive, unknown terms pass through unchanged, and results are deduplicated preserving order. Runs for **every** app on every build (the catalog is rebuilt from scratch each run, so this covers all adds/updates).
    - `build_previous_versions` lists `{uuid}-*.uf2` keys, downloads each object to compute md5 (never trusts `ETag` because multipart uploads emit `<hash>-<partcount>`), excludes the entry matching the current `version`, sorts newest-first via `packaging.version.parse`, and writes the result onto `app["previous_versions"]`. This **overrides** any `previous_versions` field present in the per-app JSON.
 3. **Per-catalog publish** — `process_catalog` is called twice:
    - Once for the full `current_apps` list → target key `apps.json` (or `apps-test.json` with `--test`).
    - Once for the filtered list `[app for app in current_apps if is_prerelease_version(app["version"])]` → target key `apps-beta.json` (or `apps-beta-test.json`).
-   Each call fetches its own S3 baseline via `fetch_remote_apps_json`, diffs with `find_new_apps_by_uuid` + `find_updated_apps_by_version`, writes the local file, and gates upload on `(new or updated) or force_upload`. `force_upload` is wired to `--test`; upload itself requires `--publish`. `backup_and_upload` copies the existing remote object to `{key}.DDMMYYYY.bak` before overwriting.
+   Each call fetches its own S3 baseline via `fetch_remote_apps_json`, diffs with `find_new_apps_by_uuid` + `find_updated_apps_by_version` + `find_removed_apps_by_uuid`, writes the local file, and gates upload on `(new or updated or removed) or force_upload`. `force_upload` is set by `--test` or `--force`; upload itself requires `--publish`. `backup_and_upload` copies the existing remote object to `{key}.DDMMYYYY.bak` before overwriting.
+
+### What the publish gate does and doesn't see
+
+A production upload happens only for a **new UUID**, a **removed UUID**, or a **top-level `version` increase** against the remote baseline. A removed UUID covers both an app deleted from the bucket and one moving from beta to stable, which drops out of `apps-beta.json`. None of these trigger an upload on their own; they reach S3 only when something else in the same catalog does:
+- Edits to `taxonomies.json`, or to an app's `description`/`tags`/`devices`/`image`/`binary`/`md5`.
+- A newly uploaded historical `.uf2` (changes `previous_versions` only).
+- A version downgrade.
+
+To push those changes, run `--publish --force`, which skips the gate for both production catalogs. `--test --publish` also skips it, but only for the `-test` keys. The nightly job never passes `--force`.
+
+If `fetch_remote_apps_json` can't read the baseline (missing key, S3 error, bad JSON), it returns an empty list. Every app then counts as new and the catalog publishes.
+
+### Failure behavior
+
+- **Exits non-zero, so CI goes red:** any per-app JSON that can't be loaded (aggregation, before anything is written), or a failed `put_object`. A failed upload of `apps.json` means `apps-beta.json` is not attempted in that run.
+- **Printed and ignored:** a failed backup (the upload still goes ahead), an unreadable remote baseline, and a `.uf2` that fails to download.
+- **Unparseable versions:** `compare_versions` falls back to string inequality for a top-level `version` that isn't PEP 440 (e.g. `latest`), so any change counts as an update. `build_previous_versions` sorts unparseable versions last.
+
+Top-level `binary` and `md5` are copied from the per-app JSON unchecked. Only `previous_versions` is computed from bucket contents.
 
 ### Invariants worth preserving
 
-- **Identity is `uuid`, comparison is top-level `version`.** Don't switch diffing to `name` or string compare — `compare_versions` uses PEP 440 specifically to handle prerelease suffixes (`v1.0.5alpha` < `v1.0.5`).
+- **Identity is `uuid`, comparison is top-level `version`.** Don't switch diffing to `name` or string compare — `compare_versions` uses PEP 440 specifically to handle prerelease suffixes (`v1.0.5alpha` < `v1.0.5`). String comparison is only the fallback for versions PEP 440 can't parse.
 - **Exclude prefix in aggregation is `"apps"`, not `"apps.json"`.** This keeps dated `.bak` files **and** every `apps*.json` output (production, `-test`, `-beta`, `-beta-test`) out of the catalog. Changing it would let those pollute aggregation, and the beta fan-out would feed itself on the next run.
-- **`process_catalog` uses the same string as both local filename and remote key.** The per-catalog local file lives in the working directory under the exact key name. Keep this coupling — CI and `.gitignore` assume it.
+- **`process_catalog` uses the same string as both local filename and remote key.** The per-catalog local file lives in the working directory under the exact key name. Keep this coupling — CI and `.gitignore` (which lists all four output names) assume it.
 - **Beta filter looks only at top-level `version`**, via `is_prerelease_version` (substring `alpha`/`beta`, case-insensitive). `previous_versions` is **not** filtered inside beta apps — the full history travels with the app object.
 - **`build_previous_versions` always downloads**, never falls back to ETag. The `.uf2` files are small but if upload modes change, keep this conservative — multipart ETags would silently corrupt md5 fields.
 - **Filename convention `{uuid}-{version}.uf2`** is what `build_previous_versions` parses. Any historical binary not following this pattern in the bucket is invisible to the script.

@@ -14,9 +14,9 @@
   },
   "devices": {
     "ST": ["Atari ST", "AtariST", "Atari-ST"],
-    "STE": ["Atari STE", "AtariSTE", "Atari STe", "STe"],
+    "STE": ["Atari STE", "AtariSTE"],
     "MegaST": ["Mega ST", "Atari Mega ST", "Mega-ST"],
-    "MegaSTE": ["Mega STE", "Atari Mega STE", "Mega STe", "Mega-STE"],
+    "MegaSTE": ["Mega STE", "Atari Mega STE", "Mega-STE"],
     "TT": ["Atari TT", "TT030"],
     "Falcon": ["Atari Falcon", "Falcon030", "Falcon 030"]
   }

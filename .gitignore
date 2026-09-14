@@ -162,4 +162,7 @@ cython_debug/
 secrets.sh
 !images.log
 apps.json
+apps-beta.json
+apps-test.json
+apps-beta-test.json
 .claude

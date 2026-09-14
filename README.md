@@ -16,7 +16,7 @@ Each catalog is published to its own S3 key independently, and both honour the s
 ## Usage
 
 ```bash
-python updateapps.py [--test] [--publish]
+python updateapps.py [--test] [--publish] [--force]
 ```
 
 Defaults are safe: nothing is uploaded unless you pass `--publish`.
@@ -24,9 +24,12 @@ Defaults are safe: nothing is uploaded unless you pass `--publish`.
 | Command | Local files | S3 uploads |
 |---|---|---|
 | `python updateapps.py` | rewrites `apps.json` and `apps-beta.json` | none (dry run) |
-| `python updateapps.py --publish` | rewrites `apps.json` and `apps-beta.json` | uploads each catalog **only if** its own diff shows a new UUID or a top-level `version` bump (existing objects backed up to `{key}.DDMMYYYY.bak` first) |
+| `python updateapps.py --publish` | rewrites `apps.json` and `apps-beta.json` | uploads each catalog **only if** its own diff shows a new UUID, a removed UUID, or a top-level `version` bump (existing objects backed up to `{key}.DDMMYYYY.bak` first) |
 | `python updateapps.py --test` | rewrites `apps-test.json` and `apps-beta-test.json` | none (dry run) |
 | `python updateapps.py --test --publish` | rewrites `apps-test.json` and `apps-beta-test.json` | always uploads both (no diff gate) — production `apps.json` / `apps-beta.json` untouched |
+| `python updateapps.py --publish --force` | rewrites `apps.json` and `apps-beta.json` | always uploads both (no diff gate), backing up existing objects first — use it to publish changes the diff ignores, such as taxonomy, description, or `previous_versions` edits |
+
+The run exits non-zero, which fails CI, if any per-app JSON in the bucket can't be read or parsed. In that case nothing is written or uploaded, and every bad key is listed. It also exits non-zero if an upload fails.
 
 Use `--test` while iterating: it routes both local files and both S3 objects to the `*-test.json` variants, so you can inspect the results at `https://atarist.sidecartridge.com/apps-test.json` and `https://atarist.sidecartridge.com/apps-beta-test.json` without affecting the live catalogs.
 
